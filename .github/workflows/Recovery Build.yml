@@ -1,46 +1,47 @@
-name: Recovery Build
+name: Recovery Build (SPRD)
 
 on:
   workflow_dispatch:
     inputs:
       MANIFEST_URL:
-        description: 'MANIFEST_URL (if want to use SSH keys, use git@github.com:XXXXX)'
+        description: 'TWRP manifest URL'
         required: true
-        default: 'https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp'
+        default: 'https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git'
       MANIFEST_BRANCH:
-        description: 'MANIFEST_BRANCH'
+        description: 'TWRP source branch (auto reads a twrpdtgen-sprd tree)'
         required: true
-        default: 'twrp-12.1'
+        default: 'auto'
       DEVICE_TREE_URL:
-        description: 'DEVICE_TREE_URL'
+        description: 'Device tree repository URL'
         required: true
-        default: 'https://github.com/TeamWin/android_device_asus_I003D'
       DEVICE_TREE_BRANCH:
-        description: 'DEVICE_TREE_BRANCH'
+        description: 'Device tree branch or tag'
         required: true
-        default: 'android-12.1'
+        default: 'main'
       DEVICE_PATH:
-        description: 'DEVICE_PATH'
+        description: 'Source path (auto reads DEVICE_PATH from BoardConfig.mk)'
         required: true
-        default: 'device/asus/I003D'
+        default: 'auto'
       COMMON_TREE_URL:
-        description: 'COMMON_TREE_URL (if no common tree, leave blank)'
+        description: 'Optional common tree repository URL'
         required: false
+        default: ''
       COMMON_PATH:
-        description: 'COMMON_PATH (if no common tree, leave blank)'
+        description: 'Optional common tree source path'
         required: false
+        default: ''
       DEVICE_NAME:
-        description: 'DEVICE_NAME'
+        description: 'Output product name (auto reads PRODUCT_DEVICE)'
         required: true
-        default: 'I003D'
+        default: 'auto'
       MAKEFILE_NAME:
-        description: 'MAKEFILE_NAME'
+        description: 'Lunch product or full target (auto supports the -ap2a suffix)'
         required: true
-        default: 'twrp_I003D'
+        default: 'auto'
       BUILD_TARGET:
-        description: 'BUILD_TARGET'
+        description: 'auto, boot, recovery, or vendorboot'
         required: true
-        default: 'recovery'
+        default: 'auto'
 
 jobs:
   build:
@@ -48,129 +49,219 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    steps:
-    - name: Display Run Parameters
-      run: |
-        echo "::group::User Environment Variables"
-        echo "Manifest URL: ${{ github.event.inputs.MANIFEST_URL }}"
-        echo "Manifest Branch: ${{ github.event.inputs.MANIFEST_BRANCH }}"
-        echo "Device Tree URL: ${{ github.event.inputs.DEVICE_TREE_URL }}"
-        echo "Device Tree Branch: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}"
-        echo "Device Path: ${{ github.event.inputs.DEVICE_PATH }}"
-        echo "Device Name: ${{ github.event.inputs.DEVICE_NAME }}"
-        echo "Makefile Name: ${{ github.event.inputs.MAKEFILE_NAME }}"
-        echo "Build Target: ${{ github.event.inputs.BUILD_TARGET }}.img"
-        echo "::endgroup::"
 
-    # You might want to Checkout your repo first, but not mandatory
-    - name: Check Out
+    steps:
+    - name: Check out builder
       uses: actions/checkout@v4
 
-    # Cleanup The Actions Workspace Using Custom Composite Run Actions
-    - name: Cleanup
+    - name: Clean runner workspace
       uses: rokibhasansagar/slimhub_actions@main
-      # That's it! Now use your normal steps
 
-    - name: Prepare the environment
+    - name: Prepare build environment
       run: |
-        sudo apt update && sudo apt upgrade -y
-        DEBIAN_FRONTEND=noninteractive sudo apt install -yq \
-            linux-modules-extra-$(uname -r) \
-            gperf gcc-multilib gcc-10-multilib g++-multilib g++-10-multilib \
-            libc6-dev lib32ncurses-dev x11proto-core-dev libx11-dev tree lib32z-dev libgl1-mesa-dev libxml2-utils \
-            xsltproc bc ccache lib32readline-dev lib32z1-dev liblz4-tool libncurses-dev libsdl1.2-dev \
-            build-essential libgtk-3-dev libglu1-mesa-dev freeglut3-dev git libxml2 lzop pngcrush schedtool squashfs-tools \
-            imagemagick libbz2-dev lzma ncftp qemu-user-static libstdc++-10-dev libncurses6 python3 tar
+        sudo apt-get update
+        DEBIAN_FRONTEND=noninteractive sudo apt-get install -yq \
+          bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
+          git git-lfs gnupg gperf imagemagick lib32ncurses-dev \
+          lib32readline-dev lib32z1-dev libc6-dev-i386 libgl1-mesa-dev \
+          liblz4-tool libncurses-dev libncurses6 libsdl1.2-dev libssl-dev \
+          libxml2 libxml2-utils lz4 lzop pngcrush python3 python-is-python3 \
+          rsync schedtool squashfs-tools tar unzip x11proto-core-dev \
+          xsltproc zip zlib1g-dev
+
+    - name: Set up SSH keys
+      if: >-
+        startsWith(inputs.MANIFEST_URL, 'git@github.com') ||
+        startsWith(inputs.DEVICE_TREE_URL, 'git@github.com') ||
+        startsWith(inputs.COMMON_TREE_URL, 'git@github.com')
+      uses: webfactory/ssh-agent@v0.9.0
+      with:
+        ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+    - name: Clone device tree for inspection
+      env:
+        DEVICE_TREE_URL: ${{ inputs.DEVICE_TREE_URL }}
+        DEVICE_TREE_BRANCH: ${{ inputs.DEVICE_TREE_BRANCH }}
+      run: |
+        git clone --depth=1 --branch "$DEVICE_TREE_BRANCH" \
+          "$DEVICE_TREE_URL" "$RUNNER_TEMP/device-tree"
+
+    - name: Resolve device tree configuration
+      id: tree
+      env:
+        MANIFEST_BRANCH: ${{ inputs.MANIFEST_BRANCH }}
+        DEVICE_PATH: ${{ inputs.DEVICE_PATH }}
+        DEVICE_NAME: ${{ inputs.DEVICE_NAME }}
+        MAKEFILE_NAME: ${{ inputs.MAKEFILE_NAME }}
+        BUILD_TARGET: ${{ inputs.BUILD_TARGET }}
+      run: |
+        python3 scripts/resolve_tree.py \
+          --tree "$RUNNER_TEMP/device-tree" \
+          --manifest-branch "$MANIFEST_BRANCH" \
+          --device-path "$DEVICE_PATH" \
+          --device-name "$DEVICE_NAME" \
+          --makefile-name "$MAKEFILE_NAME" \
+          --build-target "$BUILD_TARGET" \
+          --github-output "$GITHUB_OUTPUT"
+
+    - name: Display resolved configuration
+      env:
+        MANIFEST_URL: ${{ inputs.MANIFEST_URL }}
+        MANIFEST_BRANCH: ${{ steps.tree.outputs.manifest_branch }}
+        DEVICE_TREE_URL: ${{ inputs.DEVICE_TREE_URL }}
+        DEVICE_TREE_BRANCH: ${{ inputs.DEVICE_TREE_BRANCH }}
+        DEVICE_PATH: ${{ steps.tree.outputs.device_path }}
+        DEVICE_NAME: ${{ steps.tree.outputs.device_name }}
+        LUNCH_TARGET: ${{ steps.tree.outputs.lunch_target }}
+        BUILD_GOAL: ${{ steps.tree.outputs.build_goal }}
+        ARTIFACT_NAME: ${{ steps.tree.outputs.artifact_name }}
+        IS_SPRD: ${{ steps.tree.outputs.is_sprd }}
+      run: |
+        echo "::group::Resolved build configuration"
+        printf '%s\n' \
+          "Manifest: $MANIFEST_URL ($MANIFEST_BRANCH)" \
+          "Device tree: $DEVICE_TREE_URL ($DEVICE_TREE_BRANCH)" \
+          "Device path: $DEVICE_PATH" \
+          "Device name: $DEVICE_NAME" \
+          "Lunch target: $LUNCH_TARGET" \
+          "Build goal: $BUILD_GOAL" \
+          "Expected artifact: $ARTIFACT_NAME" \
+          "SPRD source overlay: $IS_SPRD"
+        echo "::endgroup::"
 
     - name: Install OpenJDK
       uses: actions/setup-java@v4
       with:
         distribution: 'zulu'
-        java-version: '11'
+        java-version: ${{ startsWith(steps.tree.outputs.manifest_branch, 'twrp-14') && '17' || '11' }}
 
-    - name: Setup SSH Keys
-      if: ${{ startsWith(github.event.inputs.MANIFEST_URL, 'git@github.com') || 
-          startsWith(github.event.inputs.DEVICE_TREE_URL, 'git@github.com') ||
-          startsWith(github.event.inputs.COMMON_TREE_URL, 'git@github.com') }}
-      uses: webfactory/ssh-agent@v0.9.0
-      with:
-          ssh-private-key: |
-            ${{ secrets.SSH_PRIVATE_KEY }}
-
-    - name: Install repo
+    - name: Install repo tool
       run: |
-        mkdir ~/bin
-        curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
-        chmod a+x ~/bin/repo
-        sudo ln -sf ~/bin/repo /usr/bin/repo
+        mkdir -p "$RUNNER_TEMP/repo-bin"
+        curl --fail --location --retry 3 \
+          https://storage.googleapis.com/git-repo-downloads/repo \
+          --output "$RUNNER_TEMP/repo-bin/repo"
+        chmod a+x "$RUNNER_TEMP/repo-bin/repo"
+        echo "$RUNNER_TEMP/repo-bin" >> "$GITHUB_PATH"
 
-    - name: Initialize repo
+    - name: Initialize source
+      id: source
+      env:
+        MANIFEST_URL: ${{ inputs.MANIFEST_URL }}
+        MANIFEST_BRANCH: ${{ steps.tree.outputs.manifest_branch }}
       run: |
-        mkdir workspace
+        mkdir -p workspace
         cd workspace
-        echo "workspace-folder=$(pwd)" >> $GITHUB_OUTPUT
-        git config --global user.name "Nico170420"
-        git config --global user.email "b170420nc@gmail.com"
-        repo init --depth=1 -u ${{ github.event.inputs.MANIFEST_URL }} -b ${{ github.event.inputs.MANIFEST_BRANCH }}
-      id: pwd
+        echo "workspace-folder=$PWD" >> "$GITHUB_OUTPUT"
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        repo init --depth=1 -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH"
 
-    - name: Repo Sync
-      run: |
-        repo sync -j$(nproc --all) --force-sync
-      working-directory: workspace
+    - name: Sync source
+      working-directory: ${{ steps.source.outputs.workspace-folder }}
+      run: repo sync -c -j"$(nproc --all)" --force-sync --no-clone-bundle --no-tags
 
-    - name: Clone device tree
+    - name: Install device tree
+      env:
+        DEVICE_PATH: ${{ steps.tree.outputs.device_path }}
+      working-directory: ${{ steps.source.outputs.workspace-folder }}
       run: |
-        git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.DEVICE_PATH }}
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+        destination="$PWD/$DEVICE_PATH"
+        test ! -e "$destination"
+        mkdir -p "$(dirname "$destination")"
+        mv "$RUNNER_TEMP/device-tree" "$destination"
 
     - name: Clone common tree
-      if: |
-        github.event.inputs.COMMON_TREE_URL != null
-        && github.event.inputs.COMMON_PATH != null
+      if: inputs.COMMON_TREE_URL != '' && inputs.COMMON_PATH != ''
+      env:
+        COMMON_TREE_URL: ${{ inputs.COMMON_TREE_URL }}
+        COMMON_PATH: ${{ inputs.COMMON_PATH }}
+        DEVICE_TREE_BRANCH: ${{ inputs.DEVICE_TREE_BRANCH }}
+      working-directory: ${{ steps.source.outputs.workspace-folder }}
       run: |
-        git clone ${{ github.event.inputs.COMMON_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.COMMON_PATH }}
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+        case "$COMMON_PATH" in
+          device/*) ;;
+          *) echo "COMMON_PATH must stay under device/: $COMMON_PATH" >&2; exit 1 ;;
+        esac
+        case "/$COMMON_PATH/" in
+          */../*) echo "COMMON_PATH cannot contain '..': $COMMON_PATH" >&2; exit 1 ;;
+        esac
+        git clone --depth=1 --branch "$DEVICE_TREE_BRANCH" \
+          "$COMMON_TREE_URL" "$COMMON_PATH"
 
-    - name: Check Build Tree
-      uses: haya14busa/action-cond@v1
-      id: buildtree
-      with:
-        cond: ${{ github.event.inputs.MANIFEST_BRANCH == 'twrp-11' || github.event.inputs.MANIFEST_BRANCH == 'twrp-12.1' }}
-        if_true: twrp
-        if_false: omni
-
-    - name: Sync Device Dependencies
+    - name: Sync device dependencies
+      env:
+        DEVICE_PATH: ${{ steps.tree.outputs.device_path }}
+      working-directory: ${{ steps.source.outputs.workspace-folder }}
       run: |
-        bash ${GITHUB_WORKSPACE}/scripts/convert.sh ${{ github.event.inputs.DEVICE_PATH }}/${{ steps.buildtree.outputs.value }}.dependencies
-        repo sync -j$(nproc --all)
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-      continue-on-error: true
+        shopt -s nullglob
+        dependency_files=("$DEVICE_PATH"/*.dependencies)
+        if (( ${#dependency_files[@]} == 0 )); then
+          echo "No device dependency manifest found"
+          exit 0
+        fi
+        for dependency_file in "${dependency_files[@]}"; do
+          bash "$GITHUB_WORKSPACE/scripts/convert.sh" "$dependency_file"
+        done
+        repo sync -c -j"$(nproc --all)" --force-sync --no-clone-bundle --no-tags
 
-    - name: Set Swap Space
+    - name: Apply SPRD source overlay
+      env:
+        DEVICE_PATH: ${{ steps.tree.outputs.device_path }}
+      working-directory: ${{ steps.source.outputs.workspace-folder }}
+      run: |
+        patch_script="$DEVICE_PATH/prebuilt/sourcecode/patch.sh"
+        if [[ ! -f "$patch_script" ]]; then
+          echo "No SPRD source overlay packaged in this tree"
+          exit 0
+        fi
+        TWRP_SOURCE="$PWD" sh "$patch_script"
+        TWRP_SOURCE="$PWD" sh "$patch_script" --check
+
+    - name: Set swap space
       uses: pierotofy/set-swap-space@master
       with:
         swap-size-gb: 12
 
-    - name: Building recovery
+    - name: Build recovery image
+      env:
+        LUNCH_TARGET: ${{ steps.tree.outputs.lunch_target }}
+        BUILD_GOAL: ${{ steps.tree.outputs.build_goal }}
+      working-directory: ${{ steps.source.outputs.workspace-folder }}
       run: |
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
-        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng && make clean && make ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+        lunch "$LUNCH_TARGET"
+        make "$BUILD_GOAL" -j"$(nproc --all)"
+
+    - name: Collect build artifacts
+      env:
+        DEVICE_NAME: ${{ steps.tree.outputs.device_name }}
+        ARTIFACT_NAME: ${{ steps.tree.outputs.artifact_name }}
+      working-directory: ${{ steps.source.outputs.workspace-folder }}
+      run: |
+        product_dir="out/target/product/$DEVICE_NAME"
+        artifact="$product_dir/$ARTIFACT_NAME"
+        test -s "$artifact"
+        mkdir -p "$GITHUB_WORKSPACE/release"
+        cp "$artifact" "$GITHUB_WORKSPACE/release/"
+        find "$product_dir" -maxdepth 1 -type f -name '*.zip' \
+          -exec cp '{}' "$GITHUB_WORKSPACE/release/" ';'
+        cd "$GITHUB_WORKSPACE/release"
+        sha256sum ./* > SHA256SUMS
 
     - name: Upload to Release
       uses: softprops/action-gh-release@v2
       with:
-        files: | 
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*vendor*.img
-        name: ${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
+        files: release/*
+        fail_on_unmatched_files: true
+        name: ${{ steps.tree.outputs.device_name }}-${{ github.run_id }}
         tag_name: ${{ github.run_id }}
         body: |
-          Manifest: ${{ github.event.inputs.MANIFEST_BRANCH }}
-          Device: ${{ github.event.inputs.DEVICE_NAME }}
-          Target: ${{ github.event.inputs.BUILD_TARGET }}.img
+          Manifest: ${{ steps.tree.outputs.manifest_branch }}
+          Device: ${{ steps.tree.outputs.device_name }}
+          Lunch target: ${{ steps.tree.outputs.lunch_target }}
+          Build target: ${{ steps.tree.outputs.artifact_name }}
+          SPRD overlay: ${{ steps.tree.outputs.is_sprd }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
