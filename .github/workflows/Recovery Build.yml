@@ -218,6 +218,29 @@ jobs:
         TWRP_SOURCE="$PWD" sh "$patch_script"
         TWRP_SOURCE="$PWD" sh "$patch_script" --check
 
+    - name: Patch retained stock SELinux policy
+      env:
+        DEVICE_PATH: ${{ steps.tree.outputs.device_path }}
+      working-directory: ${{ steps.source.outputs.workspace-folder }}
+      run: |
+        policy_script="$DEVICE_PATH/tools/patch_stock_sepolicy.sh"
+        if [[ ! -f "$policy_script" ]]; then
+          echo "No retained stock SELinux policy in this tree"
+          exit 0
+        fi
+
+        if ! dpkg-query -W -f='${Status}' libsepol-dev 2>/dev/null | grep -q 'install ok installed'; then
+          sudo apt-get update
+          sudo apt-get install -y libsepol-dev
+        fi
+        policy_source="$DEVICE_PATH/tools/patch_stock_sepolicy.c"
+        policy_binary="$RUNNER_TEMP/sprd-sepolicy-patcher"
+        test -f "$policy_source"
+        gcc -std=c11 -O2 -Wall -Wextra -o "$policy_binary" "$policy_source" \
+          -Wl,-Bstatic -lsepol -Wl,-Bdynamic
+        SEPOLICY_PATCHER="$policy_binary" sh "$policy_script"
+        test -s "$DEVICE_PATH/recovery/root/sepolicy"
+
     - name: Set swap space
       uses: pierotofy/set-swap-space@master
       with:
