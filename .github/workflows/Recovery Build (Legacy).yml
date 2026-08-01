@@ -1,4 +1,4 @@
-name: Recovery Build (Legacy)
+name: Recovery Build (Legacy - pre-twrpdtgen)
 
 on:
   workflow_dispatch:
@@ -49,6 +49,11 @@ jobs:
     permissions:
       contents: write
     steps:
+    - name: Legacy workflow notice
+      run: |
+        echo "This workflow is kept for pre-twrpdtgen Android 8.1-and-earlier trees."
+        echo "For twrpdtgen-sprd trees, use the 'Recovery Build (SPRD)' workflow."
+
     - name: Display Run Parameters
       run: |
         echo "::group::User Environment Variables"
