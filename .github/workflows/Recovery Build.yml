@@ -240,6 +240,10 @@ jobs:
           -Wl,-Bstatic -lsepol -Wl,-Bdynamic
         SEPOLICY_PATCHER="$policy_binary" sh "$policy_script"
         test -s "$DEVICE_PATH/recovery/root/sepolicy"
+        if cmp -s "$DEVICE_PATH/prebuilt/sepolicy.stock" "$DEVICE_PATH/recovery/root/sepolicy"; then
+          echo "Patched SELinux policy is byte-identical to stock policy" >&2
+          exit 1
+        fi
 
     - name: Set swap space
       uses: pierotofy/set-swap-space@master
