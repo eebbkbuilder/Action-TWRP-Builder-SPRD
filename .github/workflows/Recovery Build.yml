@@ -116,6 +116,7 @@ jobs:
         BUILD_GOAL: ${{ steps.tree.outputs.build_goal }}
         ARTIFACT_NAME: ${{ steps.tree.outputs.artifact_name }}
         IS_SPRD: ${{ steps.tree.outputs.is_sprd }}
+        IS_VENDOR_BOOT: ${{ steps.tree.outputs.is_vendor_boot }}
       run: |
         echo "::group::Resolved build configuration"
         printf '%s\n' \
@@ -126,7 +127,8 @@ jobs:
           "Lunch target: $LUNCH_TARGET" \
           "Build goal: $BUILD_GOAL" \
           "Expected artifact: $ARTIFACT_NAME" \
-          "SPRD source overlay: $IS_SPRD"
+          "SPRD source overlay: $IS_SPRD" \
+          "Vendor boot tree: $IS_VENDOR_BOOT"
         echo "::endgroup::"
 
     - name: Install OpenJDK
@@ -219,6 +221,7 @@ jobs:
         TWRP_SOURCE="$PWD" sh "$patch_script" --check
 
     - name: Patch retained stock SELinux policy
+      if: steps.tree.outputs.is_vendor_boot == 'true'
       env:
         DEVICE_PATH: ${{ steps.tree.outputs.device_path }}
       working-directory: ${{ steps.source.outputs.workspace-folder }}
