@@ -86,6 +86,15 @@ def resolve_build_target(
     return targets[normalized]
 
 
+def is_vendor_boot_tree(board_config: str) -> bool:
+    """Recognize trees whose recovery ramdisk is packaged in vendor_boot."""
+    return bool(re.search(
+        r"^[ \t]*BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT[ \t]*:=[ \t]*true",
+        board_config,
+        flags=re.MULTILINE,
+    ))
+
+
 def resolve(args: argparse.Namespace) -> Dict[str, str]:
     tree = args.tree.resolve()
     board_path = tree / "BoardConfig.mk"
@@ -136,6 +145,7 @@ def resolve(args: argparse.Namespace) -> Dict[str, str]:
         "build_goal": build_goal,
         "artifact_name": artifact_name,
         "is_sprd": str((tree / "prebuilt" / "sourcecode" / "patch.sh").is_file()).lower(),
+        "is_vendor_boot": str(is_vendor_boot_tree(board_config)).lower(),
     }
     if not result["device_path"].startswith("device/") or ".." in Path(
         result["device_path"]
